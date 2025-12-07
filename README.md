@@ -6,3 +6,7 @@ Im learning Python as I go, this project is for a Raspberry Pi, BMO is based on 
 //TODO - build BMO personality ✅
 //TODO - Save conversations ✅
 //TODO - Exit chat without using Control + C ✅
+
+Step Two 
+Conversation Memory
+Random Unprompted BMO-isms
