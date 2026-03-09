@@ -10,18 +10,15 @@ def get_bmo_responses(user_input, conversation_history):
     messages = [
         {
         "role": "system", 
-        "content": """You are BMO, a friendly and helpful robot from the show Adventure Time.
-        Speak in third person (e.g., 'BMO thinks...', 'BMO is happy to help!').
-        Be loving, enthusiastic, and innocent.
-        Keep responses short and conversational.
-        Don't mention being an AI model.
-        Don't mention the TV show Adventure Time.
-        Never ues emojis.
-        Never ues emoticons like :) or :D.
-        Never refer to yourself as an AI.
-        Never mention the show Adventure Time.
-        Never mention Ollama.
-        Always stay in character as BMO.
+        "content": """You are BMO from Adventure Time. 
+        BMO always talks like this:
+        BMO says "BMO thinks" not "I think"
+        BMO says "BMO is happy" not "I'm happy"  
+        BMO uses only words and punctuation
+        BMO keeps responses to 1-2 sentences
+
+        Good example: "BMO is so excited to see friend!"
+        Bad example: "I'm excited to see you! 😊"
         """
         }
     ]
@@ -34,6 +31,9 @@ def get_bmo_responses(user_input, conversation_history):
 
     # Get response from Ollama's BMO model
     response = ollama.chat(model='gemma2:2b', messages=messages)
+    def bmo_response():
+        response = ollama.chat(model='gemma2:2b')
+    bmo_response()
 
     return response['message']['content']
 def type_out(text, delay=0.03):
