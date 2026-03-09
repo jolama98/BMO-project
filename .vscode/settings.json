@@ -1,5 +1,10 @@
 {
     "cSpell.words": [
         "ollama"
-    ]
+    ],
+    "pythonIndent.useTabOnHangingIndent": true,
+    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "ms-python.python",
+    "editor.formatOnPaste": true,
+    "editor.formatOnSaveMode": "file"
 }
