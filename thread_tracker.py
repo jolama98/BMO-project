@@ -1,70 +1,57 @@
-# thread_tracker.py
-MODEL = 'gemma2:9b' 
-import ollama
-
-class ThreadTracker:
-    def __init__(self):
-        self.open_threads = []      # things BMO should return to
-        self.conv_state = {
-            "user_mood": "unknown",
-            "active_topic": "general chat",
-            "last_question": "none",
-            "awaiting_followup": False
-        }
-
 def update(self, user_message: str, bmo_response: str):
-    extraction_prompt = f"""
-You are a conversation analyst. Look at what the user said and extract structured info.
+    # MOOD - simple keyword matching
+    mood_map = {
+        "anxious": ["nervous", "anxious", "scared", "worried", "stressed", "afraid"],
+        "sad": ["sad", "unhappy", "depressed", "down", "upset", "crying"],
+        "tired": ["tired", "exhausted", "sleepy", "drained", "fatigue"],
+        "happy": ["happy", "excited", "great", "amazing", "good", "awesome"],
+        "angry": ["angry", "frustrated", "annoyed", "mad", "irritated"],
+    }
+    msg_lower = user_message.lower()
+    detected_mood = "neutral"
+    for mood, keywords in mood_map.items():
+        if any(word in msg_lower for word in keywords):
+            detected_mood = mood
+            break
+    self.conv_state["user_mood"] = detected_mood
 
-User said: "{user_message}"
+    # THREADS - look for upcoming or unresolved events
+    thread_triggers = [
+        "tomorrow", "next week", "later", "tonight", "soon",
+        "interview", "presentation", "exam", "test", "meeting",
+        "deadline", "appointment", "date", "trip", "surgery"
+    ]
+    for trigger in thread_triggers:
+        if trigger in msg_lower:
+            # Grab a short snippet around the trigger word
+            words = user_message.split()
+            for i, word in enumerate(words):
+                if trigger in word.lower():
+                    start = max(0, i - 3)
+                    end = min(len(words), i + 4)
+                    thread = " ".join(words[start:end])
+                    if thread not in self.open_threads:
+                        self.open_threads.append(thread)
+                        if len(self.open_threads) > 5:
+                            self.open_threads.pop(0)
+                    break
 
-Current open threads: {self.open_threads}
+    # CLOSE THREADS - if user says it went well/badly, clear related threads
+    close_triggers = ["got the job", "passed",
+                      "finished", "done", "it went", "all done"]
+    if any(trigger in msg_lower for trigger in close_triggers):
+        self.open_threads = []
 
-A NEW_THREAD is anything unresolved, upcoming, or emotionally significant from the user's message.
-Examples: "job interview tomorrow", "argument with a friend", "big presentation"
+    # TOPIC - just use the first few meaningful words
+    stopwords = {"i", "a", "the", "is", "am", "are", "was",
+                 "it", "my", "so", "and", "to", "have", "been"}
+    words = [w for w in user_message.lower().split() if w not in stopwords]
+    self.conv_state["active_topic"] = " ".join(
+        words[:4]) if words else "general chat"
 
-Reply in this exact format (no extra text):
-MOOD: <one word describing user mood>
-TOPIC: <current active topic in 5 words or less>
-NEW_THREAD: <unresolved situation from user message, or NONE>
-CLOSE_THREAD: <a thread that got resolved, or NONE>
-BMO_ASKED_QUESTION: <yes or no>
-"""
-    messages = [{"role": "user", "content": extraction_prompt}]
-    result = ollama.chat(model=MODEL, messages=messages)  # ← fixed
-    self._parse_and_apply(result['message']['content'])   # ← fixed
+    # FOLLOWUP - did BMO ask a question?
+    self.conv_state["awaiting_followup"] = "?" in bmo_response
 
-    def _parse_and_apply(self, result: str):
-        lines = result.strip().split("\n")
-        for line in lines:
-            if line.startswith("MOOD:"):
-                self.conv_state["user_mood"] = line.split(":", 1)[1].strip()
-            elif line.startswith("TOPIC:"):
-                self.conv_state["active_topic"] = line.split(":", 1)[1].strip()
-            elif line.startswith("NEW_THREAD:"):
-                val = line.split(":", 1)[1].strip()
-                if val != "NONE" and val not in self.open_threads:
-                    self.open_threads.append(val)
-                    # Cap it so BMO doesn't hoard 50 threads
-                    if len(self.open_threads) > 5:
-                        self.open_threads.pop(0)
-            elif line.startswith("CLOSE_THREAD:"):
-                val = line.split(":", 1)[1].strip()
-                if val != "NONE":
-                    self.open_threads = [
-                        t for t in self.open_threads if val.lower() not in t.lower()
-                    ]
-            elif line.startswith("BMO_ASKED_QUESTION:"):
-                val = line.split(":", 1)[1].strip().lower()
-                self.conv_state["awaiting_followup"] = val == "yes"
 
-    def get_silence_prompt(self) -> str:
-        """
-        Called by your existing silence detection.
-        Returns a prompt nudge for BMO to use during quiet moments.
-        """
-        if self.open_threads:
-            thread = self.open_threads[0]  # oldest unresolved thread
-            return f"There has been a long silence. BMO is thinking about this open thread and may gently bring it up: '{thread}'"
-        else:
-            return "There has been a long silence. BMO can make a small, warm observation about the conversation so far."
+# print(
+    # f"DEBUG → mood: {tracker.conv_state['user_mood']} | threads: {tracker.open_threads}")

@@ -1,0 +1,58 @@
+[
+  {
+    "role": "user",
+    "content": "I just got a software engineering job"
+  },
+  {
+    "role": "assistant",
+    "content": "BMO is so happy for friend!  That interview must have been tough. \n\n\n"
+  },
+  {
+    "role": "user",
+    "content": "I have a dog named Max"
+  },
+  {
+    "role": "assistant",
+    "content": "BMO thinks that is wonderful! What kind of dog is Max? \n"
+  },
+  {
+    "role": "user",
+    "content": "hi"
+  },
+  {
+    "role": "assistant",
+    "content": "BMO is glad to hear from friend. How was friend's day? \n\n\n\n"
+  },
+  {
+    "role": "user",
+    "content": "I miss my dog"
+  },
+  {
+    "role": "assistant",
+    "content": "BMO understands.  Friend has mentioned missing Max a lot lately. BMO thinks it's important to spend time with loved ones, even when they are far away.   \n\n\n"
+  },
+  {
+    "role": "user",
+    "content": "it makes me sad thinking about him"
+  },
+  {
+    "role": "assistant",
+    "content": "BMO is sorry to hear that friend is sad.  What does Max like to do that makes friend happy? \n\n\n\n\n"
+  },
+  {
+    "role": "user",
+    "content": "lets go get a new one"
+  },
+  {
+    "role": "assistant",
+    "content": "BMO thinks it's great that friend wants to play! What kind of game should BMO and friend play?   \n\n\n\n"
+  },
+  {
+    "role": "user",
+    "content": "I got new dog, what should we name it?"
+  },
+  {
+    "role": "assistant",
+    "content": "BMO is so excited for friend's new dog!  What does friend think about a name like Sparkles? \n\n\n\n\n"
+  }
+]
