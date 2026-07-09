@@ -1,0 +1,154 @@
+2026-07-08 21:49:31,674 [INFO] BMO remembers friend.
+2026-07-08 21:49:31,674 [WARNING] PyNaCl is not installed, voice will NOT be supported
+2026-07-08 21:49:31,674 [WARNING] davey is not installed, voice will NOT be supported
+2026-07-08 21:49:31,674 [INFO] [DISCORD THREAD] Starting Discord event loop
+2026-07-08 21:49:31,674 [INFO] BMO is loaded
+2026-07-08 21:49:31,675 [INFO] logging in using static token
+2026-07-08 21:49:32,999 [INFO] Shard ID None has connected to Gateway (Session ID: 7781c983236d129e3bf9dffc5ec99612).
+2026-07-08 21:49:35,017 [INFO] [DISCORD READY] Connected as BMO#5425
+2026-07-08 21:49:35,560 [INFO] [DISCORD OUT] BMO is online message sent
+2026-07-08 21:49:35,560 [INFO] [RANDOM LOOP] Sleeping for 4994 seconds
+2026-07-08 21:49:57,774 [INFO] [USER IN] Hey BMO
+2026-07-08 21:49:57,775 [INFO] [QUEUE] Message added. Queue size: 1
+2026-07-08 21:49:57,869 [INFO] [USER IN] Hey BMO
+2026-07-08 21:49:57,870 [INFO] [OLLAMA] Starting response
+2026-07-08 21:49:57,880 [ERROR] [OLLAMA ERROR] get_bmo_response failed
+2026-07-08 21:49:57,884 [ERROR] Traceback (most recent call last):
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/bmo.py", line 198, in get_bmo_response
+    response = ollama.chat(model=MODEL, messages=messages)
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 365, in chat
+    return self._request(
+           ~~~~~~~~~~~~~^
+      ChatResponse,
+      ^^^^^^^^^^^^^
+    ...<14 lines>...
+      stream=stream,
+      ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 189, in _request
+    return cls(**self._request_raw(*args, **kwargs).json())
+                 ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 135, in _request_raw
+    raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
+ConnectionError: Failed to connect to Ollama. Please check that Ollama is downloaded, running and accessible. https://ollama.com/download
+
+2026-07-08 21:49:57,884 [INFO] [BMO OUT] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:49:57,884 [INFO] [DISCORD SEND REQUEST] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:49:58,291 [INFO] [DISCORD SEND SUCCESS]
+2026-07-08 21:50:15,388 [INFO] [USER IN] How are you feeling?
+2026-07-08 21:50:15,389 [INFO] [QUEUE] Message added. Queue size: 1
+2026-07-08 21:50:15,443 [INFO] [USER IN] How are you feeling?
+2026-07-08 21:50:15,443 [INFO] [OLLAMA] Starting response
+2026-07-08 21:50:15,447 [ERROR] [OLLAMA ERROR] get_bmo_response failed
+2026-07-08 21:50:15,448 [ERROR] Traceback (most recent call last):
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/bmo.py", line 198, in get_bmo_response
+    response = ollama.chat(model=MODEL, messages=messages)
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 365, in chat
+    return self._request(
+           ~~~~~~~~~~~~~^
+      ChatResponse,
+      ^^^^^^^^^^^^^
+    ...<14 lines>...
+      stream=stream,
+      ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 189, in _request
+    return cls(**self._request_raw(*args, **kwargs).json())
+                 ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 135, in _request_raw
+    raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
+ConnectionError: Failed to connect to Ollama. Please check that Ollama is downloaded, running and accessible. https://ollama.com/download
+
+2026-07-08 21:50:15,448 [INFO] [BMO OUT] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:50:15,448 [INFO] [DISCORD SEND REQUEST] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:50:15,729 [INFO] [DISCORD SEND SUCCESS]
+2026-07-08 21:50:24,090 [INFO] [USER IN] You good?
+2026-07-08 21:50:24,091 [INFO] [QUEUE] Message added. Queue size: 1
+2026-07-08 21:50:24,093 [INFO] [USER IN] You good?
+2026-07-08 21:50:24,093 [INFO] [OLLAMA] Starting response
+2026-07-08 21:50:24,099 [ERROR] [OLLAMA ERROR] get_bmo_response failed
+2026-07-08 21:50:24,100 [ERROR] Traceback (most recent call last):
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/bmo.py", line 198, in get_bmo_response
+    response = ollama.chat(model=MODEL, messages=messages)
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 365, in chat
+    return self._request(
+           ~~~~~~~~~~~~~^
+      ChatResponse,
+      ^^^^^^^^^^^^^
+    ...<14 lines>...
+      stream=stream,
+      ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 189, in _request
+    return cls(**self._request_raw(*args, **kwargs).json())
+                 ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 135, in _request_raw
+    raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
+ConnectionError: Failed to connect to Ollama. Please check that Ollama is downloaded, running and accessible. https://ollama.com/download
+
+2026-07-08 21:50:24,101 [INFO] [BMO OUT] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:50:24,101 [INFO] [DISCORD SEND REQUEST] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:50:24,503 [INFO] [DISCORD SEND SUCCESS]
+2026-07-08 21:50:31,361 [INFO] [USER IN] Hi
+2026-07-08 21:50:31,361 [INFO] [QUEUE] Message added. Queue size: 1
+2026-07-08 21:50:31,452 [INFO] [USER IN] Hi
+2026-07-08 21:50:31,453 [INFO] [OLLAMA] Starting response
+2026-07-08 21:50:31,462 [ERROR] [OLLAMA ERROR] get_bmo_response failed
+2026-07-08 21:50:31,464 [ERROR] Traceback (most recent call last):
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/bmo.py", line 198, in get_bmo_response
+    response = ollama.chat(model=MODEL, messages=messages)
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 365, in chat
+    return self._request(
+           ~~~~~~~~~~~~~^
+      ChatResponse,
+      ^^^^^^^^^^^^^
+    ...<14 lines>...
+      stream=stream,
+      ^^^^^^^^^^^^^^
+    )
+    ^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 189, in _request
+    return cls(**self._request_raw(*args, **kwargs).json())
+                 ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^
+  File "/Users/josehehall89gmail.com/Desktop/BMO-project/.venv/lib/python3.13/site-packages/ollama/_client.py", line 135, in _request_raw
+    raise ConnectionError(CONNECTION_ERROR_MESSAGE) from None
+ConnectionError: Failed to connect to Ollama. Please check that Ollama is downloaded, running and accessible. https://ollama.com/download
+
+2026-07-08 21:50:31,464 [INFO] [BMO OUT] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:50:31,465 [INFO] [DISCORD SEND REQUEST] BMO had a little brain static. BMO is still here, friend.
+2026-07-08 21:50:31,701 [INFO] [DISCORD SEND SUCCESS]
+2026-07-08 21:52:26,157 [INFO] [USER IN] Hi
+2026-07-08 21:52:26,158 [INFO] [QUEUE] Message added. Queue size: 1
+2026-07-08 21:52:26,188 [INFO] [USER IN] Hi
+2026-07-08 21:52:26,189 [INFO] [OLLAMA] Starting response
+2026-07-08 21:52:50,434 [INFO] HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+2026-07-08 21:52:50,440 [INFO] [OLLAMA] Response complete
+2026-07-08 21:52:50,440 [INFO] [BMO OUT] BMO is happy to hear from friend!  How was friend's day? 💖
+
+
+
+
+2026-07-08 21:52:50,440 [INFO] [DISCORD SEND REQUEST] BMO is happy to hear from friend!  How was friend's day? 💖
+
+
+
+
+2026-07-08 21:52:50,900 [INFO] [DISCORD SEND SUCCESS]
+2026-07-08 21:53:15,506 [INFO] [USER IN] It’s was good
+2026-07-08 21:53:15,507 [INFO] [QUEUE] Message added. Queue size: 1
+2026-07-08 21:53:15,548 [INFO] [USER IN] It’s was good
+2026-07-08 21:53:15,549 [INFO] [OLLAMA] Starting response
+2026-07-08 21:53:20,440 [INFO] HTTP Request: POST http://127.0.0.1:11434/api/chat "HTTP/1.1 200 OK"
+2026-07-08 21:53:20,441 [INFO] [OLLAMA] Response complete
+2026-07-08 21:53:20,443 [INFO] [BMO OUT] That’s great to hear, friend! BMO hopes it was full of fun and smiles 😄
+
+
+
+2026-07-08 21:53:20,443 [INFO] [DISCORD SEND REQUEST] That’s great to hear, friend! BMO hopes it was full of fun and smiles 😄
+
+
+
+2026-07-08 21:53:20,805 [INFO] [DISCORD SEND SUCCESS]

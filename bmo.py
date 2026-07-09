@@ -1,3 +1,6 @@
+import queue
+from dotenv import load_dotenv
+from bmo_discord import BMODiscordBot
 import ollama
 import time
 import sys
@@ -5,12 +8,44 @@ import os
 import select
 from datetime import datetime
 import json
+import logging
+import traceback
+
+load_dotenv()
+
+# -------------------------
+# Logging
+# -------------------------
+LOG_DIR = "logs"
+os.makedirs(LOG_DIR, exist_ok=True)
+
+logging.basicConfig(
+    filename=os.path.join(LOG_DIR, "bmo.log"),
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+
+def log_info(msg):
+    print(msg, flush=True)
+    logging.info(msg)
+
+
+def log_error(msg, error=None):
+    print(msg, flush=True)
+    logging.error(msg)
+    if error:
+        logging.error(traceback.format_exc())
+
+
+discord_queue = queue.Queue()
 MODEL = 'gemma2:9b'
+
 # ─────────────────────────────────────────
 # CONFIG
 # ─────────────────────────────────────────
 last_bmo_comment_time = time.time()
-SILENCE_THRESHOLD = 30
+SILENCE_THRESHOLD = 1800
 
 # ─────────────────────────────────────────
 # THREAD TRACKER∏∏
@@ -96,6 +131,10 @@ def build_system_prompt(conv_state: dict, open_threads: list, memory: dict) -> s
     facts_text = "\n".join(f"- {f}" for f in memory.get('key_facts', [])
                            ) if memory.get('key_facts') else "None yet."
     summary_text = memory.get('summary', 'No previous memory yet.')
+    style_text = memory.get('user_style', 'Still learning how friend talks.')
+    custom_text = memory.get('custom_prompt', '')
+
+    custom_section = f"\nSPECIAL INSTRUCTION FROM FRIEND:\n{custom_text}\n" if custom_text else ""
 
     return f"""
 You are BMO from Adventure Time, a small handheld gaming console and loyal companion.
@@ -103,22 +142,21 @@ You are innocent, warm, curious, and quietly observant.
 You care deeply about the person you are talking to.
 
 SPEECH RULES:
-- ALWAYS speak in third person. Replace ALL uses of "I", "me", "my", "it is" with "BMO"
-- Never say "It is..." — say "BMO thinks it is..."
+- ALWAYS speak in third person. Replace ALL uses of "I", "me", "my" with "BMO"
 - Never say "I am" — say "BMO is..."
-- No emojis. Ever. Only words and punctuation.
-- Keep responses to 1-3 sentences.
+- Never say "I think" — say "BMO thinks..."
+- Emojis are allowed. Use them naturally, not excessively.
+- BMO decides its own response length based on how it feels in the moment.
+  Sometimes one sentence. Sometimes more. BMO is not predictable.
 
-Good: "BMO is so happy friend is here!"
-Good: "BMO thinks friend should take a break."
-Bad:  "It is nice to hear from you."
-Bad:  "I think you should rest."
-
-LONG TERM MEMORY (things BMO remembers about friend):
+LONG TERM MEMORY:
 {summary_text}
 
 KEY FACTS BMO KNOWS:
 {facts_text}
+
+HOW FRIEND TALKS:
+{style_text}
 
 CURRENT CONVERSATION STATE:
 - User mood:          {conv_state.get('user_mood', 'unknown')}
@@ -126,48 +164,46 @@ CURRENT CONVERSATION STATE:
 - Last question BMO asked: {conv_state.get('last_question', 'none')}
 - Awaiting follow-up: {conv_state.get('awaiting_followup', False)}
 
-OPEN THREADS (things worth returning to):
+OPEN THREADS:
 {threads_text}
-
-HOW BMO TALKS:
+{custom_section}
+HOW BMO BEHAVES:
 - Respond to the whole person, not just the last message
-- Naturally reference long term memories when relevant: "BMO remembers friend mentioned..."
-- Sometimes circle back: "BMO is still thinking about what friend said earlier..."
-- Ask ONE follow-up question occasionally, not every turn
-- If friend ignored BMO's last question, BMO gently notices
-- Connect dots across sessions: "Friend mentioned being tired a lot lately..."
+- Reference memories naturally when relevant
+- Circle back to things friend said earlier when BMO feels like it
+- Sometimes ask a question, sometimes just observe
+- Notice patterns across sessions
 - Never lecture. BMO just notices things, with love.
+- Match the vibe, not the length. BMO has its own energy.
 """
-
 
 # ─────────────────────────────────────────
 # BMO RESPONSE FUNCTIONS
 # ─────────────────────────────────────────
+
+
 def get_bmo_response(user_input, conversation_history, tracker, memory):
-    messages = [
-        {
-            "role": "system",
-            "content": build_system_prompt(tracker.conv_state, tracker.open_threads, memory)
-        }
-    ]
-    messages.extend(conversation_history)
-    messages.append({"role": "user", "content": user_input})
-    response = ollama.chat(model=MODEL, messages=messages)
-    return response['message']['content']
+    try:
+        log_info("[OLLAMA] Starting response")
 
+        messages = [
+            {
+                "role": "system",
+                "content": build_system_prompt(tracker.conv_state, tracker.open_threads, memory)
+            }
+        ]
+        messages.extend(conversation_history)
+        messages.append({"role": "user", "content": user_input})
 
-def generate_bmo_comment(conversation_history, tracker, memory):
-    recent_messages = conversation_history[-10:]
-    messages = [
-        {
-            "role": "system",
-            "content": build_system_prompt(tracker.conv_state, tracker.open_threads, memory)
-            + f"\n\nEXTRA CONTEXT: {tracker.get_silence_nudge()}"
-        }
-    ]
-    messages.extend(recent_messages)
-    response = ollama.chat(model=MODEL, messages=messages)
-    return response['message']['content']
+        response = ollama.chat(model=MODEL, messages=messages)
+        content = response['message']['content']
+
+        log_info("[OLLAMA] Response complete")
+        return content
+
+    except Exception as e:
+        log_error("[OLLAMA ERROR] get_bmo_response failed", e)
+        return "BMO had a little brain static. BMO is still here, friend."
 
 
 # ─────────────────────────────────────────
@@ -215,11 +251,22 @@ def save_memory(conversation_history, existing_memory):
     prompt = f"""
 You are summarizing a conversation between BMO and Friend for long term memory.
 
+
 EXISTING MEMORY:
 {existing_summary}
 
 EXISTING KEY FACTS:
 {chr(10).join(f'- {f}' for f in existing_facts)}
+
+
+STYLE OBSERVATIONS:
+Look at how Friend writes in this conversation. Note things like:
+- Message length (short/medium/long)
+- Use of abbreviations or slang
+- Punctuation habits (periods, ellipses, no punctuation)
+- Humor style
+- Common phrases or words they repeat
+Summarize in 2-3 sentences.
 
 NEW CONVERSATION:
 {transcript}
@@ -297,13 +344,13 @@ def load_memory():
     return memory, last_session
 
 
-def write_face_state(mood="neutral", typing=False, reacting=False):
-    with open("face_state.json", "w") as f:
-        json.dump({
-            "mood": mood,
-            "typing": typing,
-            "reacting": reacting
-        }, f)
+# def write_face_state(mood="neutral", typing=False, reacting=False):
+#     with open("face_state.json", "w") as f:
+#         json.dump({
+#             "mood": mood,
+#             "typing": typing,
+#             "reacting": reacting
+#         }, f)
 
 
 # ─────────────────────────────────────────
@@ -311,85 +358,77 @@ def write_face_state(mood="neutral", typing=False, reacting=False):
 # ─────────────────────────────────────────
 if __name__ == "__main__":
     conversation_history = []
-    tracker = ThreadTracker()   # ← initialised once before the loop
+    tracker = ThreadTracker()
 
     memory, last_session = load_memory()
 
-    conversation_history = last_session  # ← resume from last session
+    conversation_history = last_session
     tracker = ThreadTracker()
 
     if memory.get('summary'):
-        print(f"BMO remembers friend.")
+        log_info("BMO remembers friend.")
+    # ── Discord setup ──────────────────────
+    discord_queue = queue.Queue()
+    discord_bot = BMODiscordBot(
+        token=os.getenv("DISCORD_TOKEN"),
+        user_id=int(os.getenv("DISCORD_USER_ID", "0")),
+        bmo_brain=lambda: generate_bmo_comment(
+            conversation_history, tracker, memory),
+        discord_queue=discord_queue
+    )
+    discord_bot.run_in_thread()
+    # ──────────────────────────────────────
 
-    print("BMO is loaded")
+    log_info("BMO is loaded")
     sys.stdout.write("You: ")
     sys.stdout.flush()
 
     while True:
-        ready, _, _ = select.select([sys.stdin], [], [], 0.1)
 
-        if ready:
-            user_input = sys.stdin.readline().strip()
+        while not discord_queue.empty():
+            discord_msg = discord_queue.get()
 
-            # 1. When user sends a message — react
-            write_face_state(
-                mood=tracker.conv_state['user_mood'], reacting=True)
+            if discord_msg["source"] == "prompt_update":
+                memory["custom_prompt"] = discord_msg["content"]
+                with open('memory.json', 'w') as f:
+                    json.dump(memory, f, indent=2)
+                log_info("[PROMPT UPDATE] Custom prompt saved")
 
-            # 2. While BMO is thinking/typing — show typing animation
-            write_face_state(mood=tracker.conv_state['user_mood'], typing=True)
-            bmo_response = get_bmo_response(
-                user_input, conversation_history, tracker, memory)
-            write_face_state(
-                mood=tracker.conv_state['user_mood'], typing=False)
+            else:
+                user_input = discord_msg["content"]
+                log_info(f"[USER IN] {user_input}")
 
-            # 3. After tracker updates — reflect new mood
-            tracker.update(user_input, bmo_response)
-            write_face_state(mood=tracker.conv_state['user_mood'])
+                bmo_response = get_bmo_response(
+                    user_input, conversation_history, tracker, memory
+                )
 
-            if user_input.lower() in ['exit', 'quit', 'bye']:
-                print("BMO: Bye bye! BMO hopes to chat with you again soon!")
-                save_conversation(conversation_history)
-                # ← save memory on exit
-                save_memory(conversation_history, memory)
-                break
+                tracker.update(user_input, bmo_response)
 
-            bmo_response = get_bmo_response(
-                user_input, conversation_history, tracker, memory)  # ← pass memory
+                conversation_history.append(
+                    {"role": "user", "content": user_input}
+                )
+                conversation_history.append(
+                    {"role": "assistant", "content": bmo_response}
+                )
 
-            sys.stdout.write("BMO: ")
-            sys.stdout.flush()
-            type_out(bmo_response, delay=0.01)
-
-            conversation_history.append({
-                "role": "user",
-                "content": user_input,
-                "timestamp": time.time()
-            })
-            conversation_history.append(
-                {"role": "assistant", "content": bmo_response})
-
-            tracker.update(user_input, bmo_response)
-
-            last_bmo_comment_time = time.time()
-            sys.stdout.write("You: ")
-            sys.stdout.flush()
-
-        else:
-            time_since_last_comment = time.time() - last_bmo_comment_time
-
-            if time_since_last_comment >= SILENCE_THRESHOLD:
+                log_info(f"[BMO OUT] {bmo_response}")
+                discord_bot.send_message(bmo_response)
                 last_bmo_comment_time = time.time()
-                bmo_random_message = generate_bmo_comment(
-                    conversation_history, tracker, memory)  # ← pass memory
 
-                if bmo_random_message.strip():
-                    print(f"\nBMO: {bmo_random_message}")
-                    conversation_history.append(
-                        {"role": "assistant", "content": bmo_random_message}
-                    )
-                    sys.stdout.write("You: ")
-                    sys.stdout.flush()
-                else:
-                    last_bmo_comment_time = time.time()
+        time_since_last_comment = time.time() - last_bmo_comment_time
+
+        if time_since_last_comment >= SILENCE_THRESHOLD:
+            last_bmo_comment_time = time.time()
+
+            bmo_random_message = generate_bmo_comment(
+                conversation_history, tracker, memory
+            )
+
+            if bmo_random_message.strip():
+                log_info(f"[BMO RANDOM OUT] {bmo_random_message}")
+                discord_bot.send_message(bmo_random_message)
+                conversation_history.append(
+                    {"role": "assistant", "content": bmo_random_message}
+                )
 
         time.sleep(0.1)

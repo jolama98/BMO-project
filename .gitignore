@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+
+# Environment
+.env
+
+# BMO data
+memory.json
+last_session.json
+conversations/
+face_state.json
+
+# macOS
+.DS_Store
+
+# VSCode
+.vscode/
