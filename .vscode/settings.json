@@ -1,12 +1,15 @@
 {
     "cSpell.words": [
         "ollama"
-  ],
-"pythonIndent.useTabOnHangingIndent": true,
-"editor.formatOnSave": true,
-"editor.formatOnPaste": true,
-"editor.formatOnSaveMode": "file",
-"[python]": {
-    "editor.defaultFormatter": "ms-python.autopep8"
-}
+    ],
+    "editor.formatOnSave": true,
+    "editor.formatOnPaste": true,
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true
+    },
+    "python.analysis.typeCheckingMode": "basic",
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "files.autoSave": "onFocusChange",
+    "python-envs.defaultEnvManager": "ms-python.python:system"
 }
