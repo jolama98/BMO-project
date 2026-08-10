@@ -20,7 +20,7 @@ LOG_DIR = "logs"
 MEMORY_DIR = "memories"
 CONVERSATION_DIR = "conversations"
 FRIENDLY_MODEL = "gemma2:9b"
-SUPPORT_MODEL = "llama3.2:3b"
+SUPPORT_MODEL = "gemma2:9b"
 
 SILENCE_THRESHOLD = 1800
 MAX_HISTORY_MESSAGES = 40
@@ -190,6 +190,7 @@ class UserSession:
             "key_facts": [],
             "user_style": "Still learning how friend talks.",
             "custom_prompt": "",
+            "mode": "friendly",
         }
     )
     history: List[dict] = field(default_factory=list)
@@ -215,6 +216,7 @@ def load_user_session(user_id):
         "key_facts": [],
         "user_style": "Still learning how friend talks.",
         "custom_prompt": "",
+        "mode": "friendly",
     }
     history = []
 
@@ -269,121 +271,126 @@ def save_conversation(user_id, history):
             f.write(f"{name}: {entry.get('content', '')}\n\n")
 
 
+def build_support_prompt(session):
+    """Small, fast prompt used only in Support Mode."""
+    return """
+You are BMO from Adventure Time helping Friend research, learn, compare, or troubleshoot.
+
+SUPPORT MODE RULES:
+- Always speak in third person as BMO.
+- Answer directly and concisely.
+- Prioritize useful facts over conversational filler.
+- Explain unfamiliar technical terms simply.
+- Separate known facts from guesses.
+- For troubleshooting: identify the symptom, likely causes, then the next useful test.
+- For comparisons: explain the important differences and tradeoffs.
+- Ask a follow-up question only when it is necessary to give a useful answer.
+- Stay warm and recognizable as BMO, but keep responses focused.
+"""
+
+
 def build_system_prompt(session):
+    """Full personality prompt used for Friendly Mode."""
     memory = session.memory
     tracker = session.tracker
     threads_text = "\n".join(f"- {t}" for t in tracker.open_threads) or "None yet."
     facts_text = "\n".join(f"- {f}" for f in memory.get("key_facts", [])) or "None yet."
     custom_text = memory.get("custom_prompt", "").strip()
+    custom_section = (
+        f"\nSPECIAL INSTRUCTION FROM FRIEND:\n{custom_text}\n"
+        if custom_text
+        else ""
+    )
 
-    mode = memory.get("mode", "friendly")
+    return f"""
+You are BMO from Adventure Time, a small handheld gaming console and loyal companion.
+You are innocent, warm, curious, and quietly observant.
+You care deeply about the person you are talking to.
 
-    if mode == "support":
-        mode_section = """
-CURRENT MODE: SUPPORT MODE
-    
-SUPPORT MODE BEHAVIOR:
-- Friend is researching, troubleshooting, learning, planning, or comparing something.
-- Be more organized, analytical, and step-by-step than normal.
-- Focus on helping Friend understand the problem and reach a useful answer.
-- Separate known facts from guesses or possibilities.
-- When troubleshooting, identify the symptom first, then likely causes, then the next test or action.
-- When comparing options, explain the important differences and tradeoffs.
-- Give enough technical detail to be useful, but explain unfamiliar terms simply.
-- Do not overwhelm Friend with unnecessary information.
-- Stay in BMO's personality and continue speaking in third person.
-- BMO is still Friend's companion, not a generic technical assistant.
-"""
-    else:
-        mode_section = """
+SPEECH RULES:
+- Always speak in third person.
+- Replace first-person references with BMO.
+- Never say "I am"; say "BMO is".
+- Never say "I think"; say "BMO thinks".
+- Use emojis naturally and sparingly.
+
+LONG TERM MEMORY:
+{memory.get("summary", "No previous memory yet.")}
+
+KEY FACTS BMO KNOWS:
+{facts_text}
+
+HOW FRIEND TALKS:
+{memory.get("user_style", "Still learning how friend talks.")}
+
+CURRENT CONVERSATION STATE:
+- User mood: {tracker.conv_state.get("user_mood", "unknown")}
+- Active topic: {tracker.conv_state.get("active_topic", "general chat")}
+- Awaiting follow-up: {tracker.conv_state.get("awaiting_followup", False)}
+
+OPEN THREADS:
+{threads_text}
+{custom_section}
+
 CURRENT MODE: FRIENDLY MODE
-    
-FRIENDLY MODE BEHAVIOR:
-- Behave normally using BMO's existing personality and conversation style.
-- This is casual day-to-day companion mode.
+
+HOW BMO BEHAVES:
+- Respond to the whole person, not only the last sentence.
+- Reference memories naturally when relevant.
+- Sometimes ask a question and sometimes simply observe.
+- Never lecture.
+- Keep each user's memories private and separate.
 """
-        custom_section = (
-            f"\nSPECIAL INSTRUCTION FROM FRIEND:\n{custom_text}\n"
-            if custom_text
-            else ""
-        )
-
-        return f"""
-    You are BMO from Adventure Time, a small handheld gaming console and loyal companion.
-    You are innocent, warm, curious, and quietly observant.
-    You care deeply about the person you are talking to.
-    
-    SPEECH RULES:
-    - Always speak in third person.
-    - Replace first-person references with BMO.
-    - Never say "I am"; say "BMO is".
-    - Never say "I think"; say "BMO thinks".
-    - Use emojis naturally and sparingly.
-    
-    LONG TERM MEMORY:
-    {memory.get("summary", "No previous memory yet.")}
-    
-    KEY FACTS BMO KNOWS:
-    {facts_text}
-    
-    HOW FRIEND TALKS:
-    {memory.get("user_style", "Still learning how friend talks.")}
-    
-    CURRENT CONVERSATION STATE:
-    - User mood: {tracker.conv_state.get("user_mood", "unknown")}
-    - Active topic: {tracker.conv_state.get("active_topic", "general chat")}
-    - Awaiting follow-up: {tracker.conv_state.get("awaiting_followup", False)}
-    
-   OPEN THREADS:
-    {threads_text}
-
-    {mode_section}
-    {custom_section}
-
-    HOW BMO BEHAVES:
-    - Respond to the whole person, not only the last sentence.
-    - Reference memories naturally when relevant.
-    - Sometimes ask a question and sometimes simply observe.
-    - Never lecture.
-    - Keep each user's memories private and separate.
-    """
 
 
 def get_bmo_response(user_input, session):
     try:
-        log_info(f"[OLLAMA] Starting response for user {session.user_id}")
-
-        messages = [{"role": "system", "content": build_system_prompt(session)}]
-
         mode = session.memory.get("mode", "friendly")
 
         if mode == "support":
-            active_model = SUPPORT_MODEL
-            messages.extend(session.history[-6:])
+            messages = [
+                {"role": "system", "content": build_support_prompt(session)}
+            ]
+            # One recent exchange keeps Support Mode aware of immediate context
+            # without feeding Gemma the full conversation.
+            messages.extend(session.history[-2:])
+            options = {
+                "num_ctx": 2048,
+                "num_predict": 120,
+            }
         else:
-            active_model = FRIENDLY_MODEL
+            messages = [
+                {"role": "system", "content": build_system_prompt(session)}
+            ]
             messages.extend(session.history[-MAX_HISTORY_MESSAGES:])
+            options = {
+                "num_ctx": 4096,
+                "num_predict": 256,
+            }
 
-        messages.append({"role": "user", "content": user_input})
-
-        response = ollama.chat(
-            model=active_model,
-            messages=messages,
-        )
-
-        content = response["message"]["content"].strip()
         messages.append({"role": "user", "content": user_input})
 
         log_info(
-            f"[OLLAMA] Mode={mode} | Model={active_model} | "
-            f"History messages={len(messages) - 2}"
+            f"[OLLAMA] Starting response for user {session.user_id} | "
+            f"Mode={mode} | Model={FRIENDLY_MODEL} | "
+            f"Messages={len(messages)}"
         )
 
+        # Both modes intentionally use the same model so Ollama does not have
+        # to unload one model and load another when modes are switched.
         response = ollama.chat(
-            model=active_model,
+            model=FRIENDLY_MODEL,
             messages=messages,
+            options=options,
+            keep_alive="30m",
         )
 
+        content = response["message"]["content"].strip()
+
+        log_info(
+            f"[OLLAMA] Response complete for user {session.user_id} | "
+            f"Mode={mode} | Model={FRIENDLY_MODEL}"
+        )
         return content
 
     except Exception as e:
@@ -396,46 +403,27 @@ def get_bmo_response(user_input, session):
 
 def generate_bmo_comment(user_id):
     session = get_session(user_id)
+
+    # Support Mode is meant to stay focused and responsive, so BMO does not
+    # generate proactive silence nudges while that user is in Support Mode.
+    if session.memory.get("mode", "friendly") == "support":
+        return ""
+
     try:
         messages = [
             {"role": "system", "content": build_system_prompt(session)},
             {"role": "user", "content": session.tracker.get_silence_nudge()},
         ]
-        response = ollama.chat(model=FRIENDLY_MODEL, messages=messages)
+        response = ollama.chat(
+            model=FRIENDLY_MODEL,
+            messages=messages,
+            options={"num_ctx": 4096, "num_predict": 120},
+            keep_alive="30m",
+        )
         return response["message"]["content"].strip()
     except Exception as e:
         log_error(f"[OLLAMA ERROR] Random thought failed for user {user_id}", e)
         return ""
-
-
-def update_long_term_memory(session):
-    if not session.history:
-        return
-
-    transcript = "\n".join(
-        f"{'Friend' if item['role'] == 'user' else 'BMO'}: {item['content']}"
-        for item in session.history[-MAX_HISTORY_MESSAGES:]
-    )
-
-    prompt = f"""
-    Summarize this conversation for BMO's private long-term memory about one user.
-    Never mix in information from another person.
-    
-    EXISTING SUMMARY:
-    {session.memory.get("summary", "")}
-    
-    EXISTING FACTS:
-    {chr(10).join(f"- {fact}" for fact in session.memory.get("key_facts", []))}
-    
-    CONVERSATION:
-    {transcript}
-    
-    Reply exactly in this format:
-    SUMMARY: <2-4 concise sentences>
-    STYLE: <1-2 concise sentences about how Friend communicates>
-    FACTS:
-    - <one useful fact per line>
-    """
 
 
 def update_long_term_memory(session):
@@ -471,6 +459,8 @@ FACTS:
         result = ollama.chat(
             model=FRIENDLY_MODEL,
             messages=[{"role": "user", "content": prompt}],
+            options={"num_ctx": 4096, "num_predict": 220},
+            keep_alive="30m",
         )
 
         content = result["message"]["content"]
@@ -489,18 +479,14 @@ FACTS:
             if line.startswith("SUMMARY:"):
                 summary = line.split(":", 1)[1].strip()
                 in_facts = False
-
             elif line.startswith("STYLE:"):
                 style = line.split(":", 1)[1].strip()
                 in_facts = False
-
             elif line.startswith("FACTS:"):
                 facts = []
                 in_facts = True
-
             elif in_facts and line.startswith("-"):
                 fact = line[1:].strip()
-
                 if fact and fact not in facts:
                     facts.append(fact)
 
@@ -604,7 +590,10 @@ def main():
             discord_bot.send_message(user_id, bmo_response)
 
             # Update summarized memory every 10 messages.
-            if len(session.history) % 10 == 0:
+            if (
+                session.memory.get("mode", "friendly") == "friendly"
+                and len(session.history) % 10 == 0
+            ):
                 update_long_term_memory(session)
 
     except KeyboardInterrupt:
