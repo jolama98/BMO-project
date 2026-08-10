@@ -1,23 +1,33 @@
-import queue
-from dotenv import load_dotenv
-from bmo_discord import BMODiscordBot
-import ollama
-import time
-import sys
-import os
-import select
-from datetime import datetime
 import json
 import logging
+import os
+import queue
+import sys
+import time
 import traceback
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, List
+
+import ollama
+from dotenv import load_dotenv
+
+from bmo_discord import BMODiscordBot
 
 load_dotenv()
 
-# -------------------------
-# Logging
-# -------------------------
 LOG_DIR = "logs"
+MEMORY_DIR = "memories"
+CONVERSATION_DIR = "conversations"
+FRIENDLY_MODEL = "gemma2:9b"
+SUPPORT_MODEL = "llama3.2:3b"
+
+SILENCE_THRESHOLD = 1800
+MAX_HISTORY_MESSAGES = 40
+
 os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(MEMORY_DIR, exist_ok=True)
+os.makedirs(CONVERSATION_DIR, exist_ok=True)
 
 logging.basicConfig(
     filename=os.path.join(LOG_DIR, "bmo.log"),
@@ -35,36 +45,18 @@ def log_error(msg, error=None):
     print(msg, flush=True)
     logging.error(msg)
     if error:
-        logging.error(traceback.format_exc())
+        logging.error("%s\n%s", error, traceback.format_exc())
 
 
 def log_crash(error):
     crash_file = os.path.join(LOG_DIR, "crash.log")
-
-    with open(crash_file, "a") as f:
-        f.write("\n")
-        f.write("=" * 80 + "\n")
+    with open(crash_file, "a", encoding="utf-8") as f:
+        f.write("\n" + "=" * 80 + "\n")
         f.write(f"CRASH TIME: {datetime.now()}\n")
         f.write("=" * 80 + "\n")
         f.write(traceback.format_exc())
         f.write("\n")
-
-    logging.critical("BMO crashed!")
-    logging.critical(traceback.format_exc())
-
-
-discord_queue = queue.Queue()
-MODEL = "gemma2:9b"
-
-# ─────────────────────────────────────────
-# CONFIG
-# ─────────────────────────────────────────
-last_bmo_comment_time = time.time()
-SILENCE_THRESHOLD = 1800
-
-# ─────────────────────────────────────────
-# THREAD TRACKER∏∏
-# ─────────────────────────────────────────
+    logging.critical("BMO crashed: %s", error)
 
 
 class ThreadTracker:
@@ -92,12 +84,14 @@ class ThreadTracker:
             "happy": ["happy", "excited", "great", "amazing", "good", "awesome"],
             "angry": ["angry", "frustrated", "annoyed", "mad", "irritated"],
         }
+
         msg_lower = user_message.lower()
         detected_mood = "neutral"
         for mood, keywords in mood_map.items():
             if any(word in msg_lower for word in keywords):
                 detected_mood = mood
                 break
+
         self.conv_state["user_mood"] = detected_mood
 
         thread_triggers = [
@@ -117,6 +111,7 @@ class ThreadTracker:
             "trip",
             "surgery",
         ]
+
         for trigger in thread_triggers:
             if trigger in msg_lower:
                 words = user_message.split()
@@ -127,19 +122,20 @@ class ThreadTracker:
                         thread = " ".join(words[start:end])
                         if thread not in self.open_threads:
                             self.open_threads.append(thread)
-                            if len(self.open_threads) > 5:
-                                self.open_threads.pop(0)
+                            self.open_threads = self.open_threads[-5:]
                         break
 
-        close_triggers = [
-            "got the job",
-            "passed",
-            "finished",
-            "done",
-            "it went",
-            "all done",
-        ]
-        if any(trigger in msg_lower for trigger in close_triggers):
+        if any(
+            trigger in msg_lower
+            for trigger in [
+                "got the job",
+                "passed",
+                "finished",
+                "done",
+                "it went",
+                "all done",
+            ]
+        ):
             self.open_threads = []
 
         stopwords = {
@@ -164,370 +160,467 @@ class ThreadTracker:
             "really",
             "very",
             "just",
-            "been",
             "about",
             "that",
             "this",
             "for",
             "me",
         }
-
         words = [w for w in msg_lower.split() if w not in stopwords]
         self.conv_state["active_topic"] = (
             " ".join(words[:4]) if words else "general chat"
         )
-
         self.conv_state["awaiting_followup"] = "?" in bmo_response
 
     def get_silence_nudge(self) -> str:
         if self.open_threads:
-            thread = self.open_threads[0]
-            return f"Friend has been quiet. BMO is thinking about this and may gently bring it up: '{thread}'"
-        return "Friend has been quiet for a while. BMO can make a small warm observation about the conversation so far."
+            return (
+                "Friend has been quiet. BMO may gently bring up this unfinished topic: "
+                f"'{self.open_threads[0]}'"
+            )
+        return "Friend has been quiet. BMO can share one small warm thought."
 
 
-# ─────────────────────────────────────────
-# SYSTEM PROMPT BUILDER  ← lives here
-# ─────────────────────────────────────────
-
-
-def build_system_prompt(conv_state: dict, open_threads: list, memory: dict) -> str:
-    threads_text = (
-        "\n".join(f"- {t}" for t in open_threads) if open_threads else "None yet."
+@dataclass
+class UserSession:
+    user_id: int
+    memory: dict = field(
+        default_factory=lambda: {
+            "summary": "",
+            "key_facts": [],
+            "user_style": "Still learning how friend talks.",
+            "custom_prompt": "",
+        }
     )
-
-    facts_text = (
-        "\n".join(f"- {f}" for f in memory.get("key_facts", []))
-        if memory.get("key_facts")
-        else "None yet."
-    )
-    summary_text = memory.get("summary", "No previous memory yet.")
-    style_text = memory.get("user_style", "Still learning how friend talks.")
-    custom_text = memory.get("custom_prompt", "")
-
-    custom_section = (
-        f"\nSPECIAL INSTRUCTION FROM FRIEND:\n{custom_text}\n" if custom_text else ""
-    )
-
-    return f"""
-You are BMO from Adventure Time, a small handheld gaming console and loyal companion.
-You are innocent, warm, curious, and quietly observant.
-You care deeply about the person you are talking to.
-
-SPEECH RULES:
-- ALWAYS speak in third person. Replace ALL uses of "I", "me", "my" with "BMO"
-- Never say "I am" — say "BMO is..."
-- Never say "I think" — say "BMO thinks..."
-- Emojis are allowed. Use them naturally, not excessively.
-- BMO decides its own response length based on how it feels in the moment.
-  Sometimes one sentence. Sometimes more. BMO is not predictable.
-
-LONG TERM MEMORY:
-{summary_text}
-
-KEY FACTS BMO KNOWS:
-{facts_text}
-
-HOW FRIEND TALKS:
-{style_text}
-
-CURRENT CONVERSATION STATE:
-- User mood:          {conv_state.get('user_mood', 'unknown')}
-- Active topic:       {conv_state.get('active_topic', 'general chat')}
-- Last question BMO asked: {conv_state.get('last_question', 'none')}
-- Awaiting follow-up: {conv_state.get('awaiting_followup', False)}
-
-OPEN THREADS:
-{threads_text}
-{custom_section}
-HOW BMO BEHAVES:
-- Respond to the whole person, not just the last message
-- Reference memories naturally when relevant
-- Circle back to things friend said earlier when BMO feels like it
-- Sometimes ask a question, sometimes just observe
-- Notice patterns across sessions
-- Never lecture. BMO just notices things, with love.
-- Match the vibe, not the length. BMO has its own energy.
-"""
+    history: List[dict] = field(default_factory=list)
+    tracker: ThreadTracker = field(default_factory=ThreadTracker)
+    last_bmo_comment_time: float = field(default_factory=time.time)
 
 
-# ─────────────────────────────────────────
-# BMO RESPONSE FUNCTIONS
-# ─────────────────────────────────────────
+sessions: Dict[int, UserSession] = {}
 
 
-def get_bmo_response(user_input, conversation_history, tracker, memory):
+def memory_path(user_id):
+    return os.path.join(MEMORY_DIR, f"memory_{int(user_id)}.json")
+
+
+def session_path(user_id):
+    return os.path.join(MEMORY_DIR, f"last_session_{int(user_id)}.json")
+
+
+def load_user_session(user_id):
+    user_id = int(user_id)
+    memory = {
+        "summary": "",
+        "key_facts": [],
+        "user_style": "Still learning how friend talks.",
+        "custom_prompt": "",
+    }
+    history = []
+
     try:
-        log_info("[OLLAMA] Starting response")
+        if os.path.exists(memory_path(user_id)):
+            with open(memory_path(user_id), "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    memory.update(loaded)
 
-        messages = [
-            {
-                "role": "system",
-                "content": build_system_prompt(
-                    tracker.conv_state, tracker.open_threads, memory
-                ),
-            }
-        ]
-        messages.extend(conversation_history)
+        if os.path.exists(session_path(user_id)):
+            with open(session_path(user_id), "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, list):
+                    history = loaded[-MAX_HISTORY_MESSAGES:]
+    except (OSError, json.JSONDecodeError) as e:
+        log_error(f"[MEMORY LOAD ERROR] User {user_id}", e)
+
+    session = UserSession(user_id=user_id, memory=memory, history=history)
+    if memory.get("summary"):
+        log_info(f"[MEMORY] BMO remembers user {user_id}")
+    return session
+
+
+def get_session(user_id):
+    user_id = int(user_id)
+    if user_id not in sessions:
+        sessions[user_id] = load_user_session(user_id)
+    return sessions[user_id]
+
+
+def persist_session(session):
+    clean_history = [
+        {"role": item["role"], "content": item["content"]}
+        for item in session.history[-MAX_HISTORY_MESSAGES:]
+        if item.get("role") in {"user", "assistant"} and "content" in item
+    ]
+
+    with open(memory_path(session.user_id), "w", encoding="utf-8") as f:
+        json.dump(session.memory, f, indent=2, ensure_ascii=False)
+
+    with open(session_path(session.user_id), "w", encoding="utf-8") as f:
+        json.dump(clean_history, f, indent=2, ensure_ascii=False)
+
+
+def save_conversation(user_id, history):
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = os.path.join(CONVERSATION_DIR, f"conversation_{user_id}_{timestamp}.txt")
+    with open(filename, "w", encoding="utf-8") as f:
+        for entry in history:
+            name = "Friend" if entry.get("role") == "user" else "BMO"
+            f.write(f"{name}: {entry.get('content', '')}\n\n")
+
+
+def build_system_prompt(session):
+    memory = session.memory
+    tracker = session.tracker
+    threads_text = "\n".join(f"- {t}" for t in tracker.open_threads) or "None yet."
+    facts_text = "\n".join(f"- {f}" for f in memory.get("key_facts", [])) or "None yet."
+    custom_text = memory.get("custom_prompt", "").strip()
+
+    mode = memory.get("mode", "friendly")
+
+    if mode == "support":
+        mode_section = """
+CURRENT MODE: SUPPORT MODE
+    
+SUPPORT MODE BEHAVIOR:
+- Friend is researching, troubleshooting, learning, planning, or comparing something.
+- Be more organized, analytical, and step-by-step than normal.
+- Focus on helping Friend understand the problem and reach a useful answer.
+- Separate known facts from guesses or possibilities.
+- When troubleshooting, identify the symptom first, then likely causes, then the next test or action.
+- When comparing options, explain the important differences and tradeoffs.
+- Give enough technical detail to be useful, but explain unfamiliar terms simply.
+- Do not overwhelm Friend with unnecessary information.
+- Stay in BMO's personality and continue speaking in third person.
+- BMO is still Friend's companion, not a generic technical assistant.
+"""
+    else:
+        mode_section = """
+CURRENT MODE: FRIENDLY MODE
+    
+FRIENDLY MODE BEHAVIOR:
+- Behave normally using BMO's existing personality and conversation style.
+- This is casual day-to-day companion mode.
+"""
+        custom_section = (
+            f"\nSPECIAL INSTRUCTION FROM FRIEND:\n{custom_text}\n"
+            if custom_text
+            else ""
+        )
+
+        return f"""
+    You are BMO from Adventure Time, a small handheld gaming console and loyal companion.
+    You are innocent, warm, curious, and quietly observant.
+    You care deeply about the person you are talking to.
+    
+    SPEECH RULES:
+    - Always speak in third person.
+    - Replace first-person references with BMO.
+    - Never say "I am"; say "BMO is".
+    - Never say "I think"; say "BMO thinks".
+    - Use emojis naturally and sparingly.
+    
+    LONG TERM MEMORY:
+    {memory.get("summary", "No previous memory yet.")}
+    
+    KEY FACTS BMO KNOWS:
+    {facts_text}
+    
+    HOW FRIEND TALKS:
+    {memory.get("user_style", "Still learning how friend talks.")}
+    
+    CURRENT CONVERSATION STATE:
+    - User mood: {tracker.conv_state.get("user_mood", "unknown")}
+    - Active topic: {tracker.conv_state.get("active_topic", "general chat")}
+    - Awaiting follow-up: {tracker.conv_state.get("awaiting_followup", False)}
+    
+   OPEN THREADS:
+    {threads_text}
+
+    {mode_section}
+    {custom_section}
+
+    HOW BMO BEHAVES:
+    - Respond to the whole person, not only the last sentence.
+    - Reference memories naturally when relevant.
+    - Sometimes ask a question and sometimes simply observe.
+    - Never lecture.
+    - Keep each user's memories private and separate.
+    """
+
+
+def get_bmo_response(user_input, session):
+    try:
+        log_info(f"[OLLAMA] Starting response for user {session.user_id}")
+
+        messages = [{"role": "system", "content": build_system_prompt(session)}]
+
+        mode = session.memory.get("mode", "friendly")
+
+        if mode == "support":
+            active_model = SUPPORT_MODEL
+            messages.extend(session.history[-6:])
+        else:
+            active_model = FRIENDLY_MODEL
+            messages.extend(session.history[-MAX_HISTORY_MESSAGES:])
+
         messages.append({"role": "user", "content": user_input})
 
-        response = ollama.chat(model=MODEL, messages=messages)
-        content = response["message"]["content"]
+        response = ollama.chat(
+            model=active_model,
+            messages=messages,
+        )
 
-        log_info("[OLLAMA] Response complete")
+        content = response["message"]["content"].strip()
+        messages.append({"role": "user", "content": user_input})
+
+        log_info(
+            f"[OLLAMA] Mode={mode} | Model={active_model} | "
+            f"History messages={len(messages) - 2}"
+        )
+
+        response = ollama.chat(
+            model=active_model,
+            messages=messages,
+        )
+
         return content
 
     except Exception as e:
-        log_error("[OLLAMA ERROR] get_bmo_response failed", e)
+        log_error(
+            f"[OLLAMA ERROR] Response failed for user {session.user_id}",
+            e,
+        )
         return "BMO had a little brain static. BMO is still here, friend."
 
 
-# ─────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────
-def type_out(text, delay=0.03):
-    for char in text:
-        sys.stdout.write(char)
-        sys.stdout.flush()
-        time.sleep(delay)
-    print()
+def generate_bmo_comment(user_id):
+    session = get_session(user_id)
+    try:
+        messages = [
+            {"role": "system", "content": build_system_prompt(session)},
+            {"role": "user", "content": session.tracker.get_silence_nudge()},
+        ]
+        response = ollama.chat(model=FRIENDLY_MODEL, messages=messages)
+        return response["message"]["content"].strip()
+    except Exception as e:
+        log_error(f"[OLLAMA ERROR] Random thought failed for user {user_id}", e)
+        return ""
 
 
-def save_conversation(conversation_history):
-    if not os.path.exists("conversations"):
-        os.makedirs("conversations")
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"conversations/conversation_{timestamp}.txt"
-    with open(filename, "w") as f:
-        for entry in conversation_history:
-            if entry["role"] == "user":
-                f.write(f"User: {entry['content']}\n")
-            elif entry["role"] == "assistant":
-                f.write(f"BMO: {entry['content']}\n")
-            f.write("\n")
-
-
-def save_memory(conversation_history, existing_memory):
-    """Summarize the session and merge into long term memory."""
-
-    if not conversation_history:
+def update_long_term_memory(session):
+    if not session.history:
         return
 
-    # Build a transcript for the LLM to summarize
-    transcript = ""
-    for entry in conversation_history:
-        if entry["role"] == "user":
-            transcript += f"Friend: {entry['content']}\n"
-        elif entry["role"] == "assistant":
-            transcript += f"BMO: {entry['content']}\n"
-
-    existing_summary = existing_memory.get("summary", "No previous memory.")
-    existing_facts = existing_memory.get("key_facts", [])
+    transcript = "\n".join(
+        f"{'Friend' if item['role'] == 'user' else 'BMO'}: {item['content']}"
+        for item in session.history[-MAX_HISTORY_MESSAGES:]
+    )
 
     prompt = f"""
-You are summarizing a conversation between BMO and Friend for long term memory.
+    Summarize this conversation for BMO's private long-term memory about one user.
+    Never mix in information from another person.
+    
+    EXISTING SUMMARY:
+    {session.memory.get("summary", "")}
+    
+    EXISTING FACTS:
+    {chr(10).join(f"- {fact}" for fact in session.memory.get("key_facts", []))}
+    
+    CONVERSATION:
+    {transcript}
+    
+    Reply exactly in this format:
+    SUMMARY: <2-4 concise sentences>
+    STYLE: <1-2 concise sentences about how Friend communicates>
+    FACTS:
+    - <one useful fact per line>
+    """
 
 
-EXISTING MEMORY:
-{existing_summary}
+def update_long_term_memory(session):
+    if not session.history:
+        return
 
-EXISTING KEY FACTS:
-{chr(10).join(f'- {f}' for f in existing_facts)}
+    transcript = "\n".join(
+        f"{'Friend' if item['role'] == 'user' else 'BMO'}: {item['content']}"
+        for item in session.history[-MAX_HISTORY_MESSAGES:]
+    )
 
+    prompt = f"""
+Summarize this conversation for BMO's private long-term memory about one user.
+Never mix in information from another person.
 
-STYLE OBSERVATIONS:
-Look at how Friend writes in this conversation. Note things like:
-- Message length (short/medium/long)
-- Use of abbreviations or slang
-- Punctuation habits (periods, ellipses, no punctuation)
-- Humor style
-- Common phrases or words they repeat
-Summarize in 2-3 sentences.
+EXISTING SUMMARY:
+{session.memory.get("summary", "")}
 
-NEW CONVERSATION:
+EXISTING FACTS:
+{chr(10).join(f"- {fact}" for fact in session.memory.get("key_facts", []))}
+
+CONVERSATION:
 {transcript}
 
-Extract anything new and meaningful about Friend from the new conversation.
-Merge it with existing memory. Be concise. Focus on:
-- Life events (jobs, relationships, health, big news)
-- Recurring patterns (often tired, frequently stressed, etc)
-- Things Friend cares about (hobbies, interests, goals)
-- Unresolved things Friend mentioned
-
-Reply in this exact format:
-SUMMARY: <2-4 sentences summarizing everything known about Friend so far>
+Reply exactly in this format:
+SUMMARY: <2-4 concise sentences>
+STYLE: <1-2 concise sentences about how Friend communicates>
 FACTS:
-- <one fact per line>
-- <keep existing facts if still relevant>
-- <add new facts from this session>
+- <one useful fact per line>
 """
 
-    messages = [{"role": "user", "content": prompt}]
-    result = ollama.chat(model=MODEL, messages=messages)
-    content = result["message"]["content"]
+    try:
+        result = ollama.chat(
+            model=FRIENDLY_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+        )
 
-    # Parse the result
-    new_summary = existing_summary
-    new_facts = existing_facts.copy()
+        content = result["message"]["content"]
 
-    lines = content.strip().split("\n")
-    in_facts = False
-    for line in lines:
-        if line.startswith("SUMMARY:"):
-            new_summary = line.split(":", 1)[1].strip()
-        elif line.startswith("FACTS:"):
-            in_facts = True
-            new_facts = []
-        elif in_facts and line.strip().startswith("-"):
-            fact = line.strip()[1:].strip()
-            if fact:
-                new_facts.append(fact)
+        summary = session.memory.get("summary", "")
+        style = session.memory.get(
+            "user_style",
+            "Still learning how friend talks.",
+        )
+        facts = list(session.memory.get("key_facts", []))
+        in_facts = False
 
-    # Save updated memory
-    memory = {
-        "summary": new_summary,
-        "key_facts": new_facts,
-        "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }
-    with open("memory.json", "w") as f:
-        json.dump(memory, f, indent=2)
+        for raw_line in content.splitlines():
+            line = raw_line.strip()
 
-    # Save last session for reload
-    with open("last_session.json", "w") as f:
-        # Strip timestamps before saving — ollama doesn't want extra fields
-        clean_history = [
-            {"role": e["role"], "content": e["content"]} for e in conversation_history
-        ]
-        json.dump(clean_history, f, indent=2)
+            if line.startswith("SUMMARY:"):
+                summary = line.split(":", 1)[1].strip()
+                in_facts = False
 
-    print("BMO saved the memories.")
+            elif line.startswith("STYLE:"):
+                style = line.split(":", 1)[1].strip()
+                in_facts = False
 
+            elif line.startswith("FACTS:"):
+                facts = []
+                in_facts = True
 
-def load_memory():
-    """Load long term memory and last session on startup."""
-    memory = {"summary": "", "key_facts": []}
-    last_session = []
+            elif in_facts and line.startswith("-"):
+                fact = line[1:].strip()
 
-    if os.path.exists("memory.json"):
-        with open("memory.json", "r") as f:
-            memory = json.load(f)
+                if fact and fact not in facts:
+                    facts.append(fact)
 
-    if os.path.exists("last_session.json"):
-        with open("last_session.json", "r") as f:
-            last_session = json.load(f)
+        session.memory.update(
+            {
+                "summary": summary,
+                "user_style": style,
+                "key_facts": facts[:50],
+                "last_updated": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            }
+        )
 
-    return memory, last_session
+        persist_session(session)
+        log_info(f"[MEMORY] Updated long-term memory for user {session.user_id}")
 
-
-# def write_face_state(mood="neutral", typing=False, reacting=False):
-#     with open("face_state.json", "w") as f:
-#         json.dump({
-#             "mood": mood,
-#             "typing": typing,
-#             "reacting": reacting
-#         }, f)
+    except Exception as e:
+        log_error(
+            f"[MEMORY ERROR] Could not summarize user {session.user_id}",
+            e,
+        )
+        persist_session(session)
 
 
-# ─────────────────────────────────────────
-# MAIN LOOP
-# ─────────────────────────────────────────
-if __name__ == "__main__":
-    conversation_history = []
-    tracker = ThreadTracker()
+def main():
+    token = os.getenv("DISCORD_TOKEN", "").strip()
+    raw_ids = os.getenv("DISCORD_USER_ID", "")
+    user_ids = [value.strip() for value in raw_ids.split(",") if value.strip()]
 
-    memory, last_session = load_memory()
+    if not token:
+        raise RuntimeError("DISCORD_TOKEN is missing from .env")
+    if not user_ids:
+        raise RuntimeError("DISCORD_USER_ID is missing from .env")
 
-    conversation_history = last_session
-    tracker = ThreadTracker()
+    for user_id in user_ids:
+        get_session(int(user_id))
 
-    if memory.get("summary"):
-        log_info("BMO remembers friend.")
-    # ── Discord setup ──────────────────────
     discord_queue = queue.Queue()
     discord_bot = BMODiscordBot(
-        token=os.getenv("DISCORD_TOKEN"),
-        user_ids=os.getenv("DISCORD_USER_ID", "").split(","),
-        bmo_brain=lambda: generate_bmo_comment(conversation_history, tracker, memory),
+        token=token,
+        user_ids=user_ids,
+        bmo_brain=generate_bmo_comment,
         discord_queue=discord_queue,
     )
     discord_bot.run_in_thread()
-    # ──────────────────────────────────────
 
     log_info("BMO is loaded")
-    sys.stdout.write("You: ")
-    sys.stdout.flush()
 
     try:
         while True:
-            while not discord_queue.empty():
-                discord_msg = discord_queue.get()
+            try:
+                discord_msg = discord_queue.get(timeout=0.5)
+            except queue.Empty:
+                continue
 
-                if discord_msg["source"] == "prompt_update":
-                    memory["custom_prompt"] = discord_msg["content"]
+            source = discord_msg.get("source")
+            user_id = discord_msg.get("user_id")
+            content = discord_msg.get("content", "").strip()
 
-                    with open("memory.json", "w") as f:
-                        json.dump(memory, f, indent=2)
+            if user_id is None:
+                log_error("[QUEUE ERROR] Message has no user_id")
+                continue
 
-                    log_info("[PROMPT UPDATE] Custom prompt saved")
+            session = get_session(user_id)
 
-                else:
-                    user_input = discord_msg["content"]
-                    log_info(f"[USER IN] {user_input}")
+            if source == "prompt_update":
+                session.memory["custom_prompt"] = content
+                persist_session(session)
+                log_info(f"[PROMPT UPDATE] Saved for user {user_id}")
+                continue
 
-                    bmo_response = get_bmo_response(
-                        user_input,
-                        conversation_history,
-                        tracker,
-                        memory,
-                    )
+            if source != "discord" or not content:
+                continue
+            mode_command = content.lower().strip()
 
-                    tracker.update(user_input, bmo_response)
+            if mode_command == "friendly mode":
+                session.memory["mode"] = "friendly"
+                persist_session(session)
+                discord_bot.send_message(user_id, "Friendly mode activated.")
+                continue
 
-                    conversation_history.append(
-                        {
-                            "role": "user",
-                            "content": user_input,
-                        }
-                    )
+            if mode_command == "support mode":
+                session.memory["mode"] = "support"
+                persist_session(session)
+                discord_bot.send_message(user_id, "Support mode activated.")
+                continue
 
-                    conversation_history.append(
-                        {
-                            "role": "assistant",
-                            "content": bmo_response,
-                        }
-                    )
+            bmo_response = get_bmo_response(content, session)
+            session.tracker.update(content, bmo_response)
 
-                    log_info(f"[BMO OUT] {bmo_response}")
-                    discord_bot.send_message(bmo_response)
+            session.history.extend(
+                [
+                    {"role": "user", "content": content},
+                    {"role": "assistant", "content": bmo_response},
+                ]
+            )
+            session.history = session.history[-MAX_HISTORY_MESSAGES:]
+            session.last_bmo_comment_time = time.time()
 
-                    last_bmo_comment_time = time.time()
+            persist_session(session)
+            log_info(f"[BMO OUT] User {user_id}: {bmo_response}")
+            discord_bot.send_message(user_id, bmo_response)
 
-            # This must stay inside while True,
-            # but outside the message queue loop.
-            time_since_last_comment = time.time() - last_bmo_comment_time
+            # Update summarized memory every 10 messages.
+            if len(session.history) % 10 == 0:
+                update_long_term_memory(session)
 
-            if time_since_last_comment >= SILENCE_THRESHOLD:
-                last_bmo_comment_time = time.time()
-
-                bmo_random_message = generate_bmo_comment(
-                    conversation_history,
-                    tracker,
-                    memory,
-                )
-
-                if bmo_random_message.strip():
-                    log_info(f"[BMO RANDOM OUT] {bmo_random_message}")
-
-                    discord_bot.send_message(bmo_random_message)
-
-                    conversation_history.append(
-                        {
-                            "role": "assistant",
-                            "content": bmo_random_message,
-                        }
-                    )
-
-            time.sleep(0.1)
+    except KeyboardInterrupt:
+        log_info("[SHUTDOWN] Saving user sessions")
+        for session in sessions.values():
+            persist_session(session)
+            save_conversation(session.user_id, session.history)
     except Exception as e:
         log_crash(e)
+        for session in sessions.values():
+            try:
+                persist_session(session)
+            except Exception:
+                pass
         raise
+
+
+if __name__ == "__main__":
+    main()
