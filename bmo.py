@@ -19,8 +19,10 @@ load_dotenv()
 LOG_DIR = "logs"
 MEMORY_DIR = "memories"
 CONVERSATION_DIR = "conversations"
-FRIENDLY_MODEL = "gemma2:9b"
-SUPPORT_MODEL = "gemma2:9b"
+FRIENDLY_MODEL = os.getenv("FRIENDLY_MODEL", "gemma2:9b")
+# The smaller model is a much better fit for CPU-only, latency-sensitive replies.
+# Either model can still be changed from .env without editing this file.
+SUPPORT_MODEL = os.getenv("SUPPORT_MODEL", "llama3.2:3b")
 
 SILENCE_THRESHOLD = 1800
 MAX_HISTORY_MESSAGES = 40
@@ -297,9 +299,7 @@ def build_system_prompt(session):
     facts_text = "\n".join(f"- {f}" for f in memory.get("key_facts", [])) or "None yet."
     custom_text = memory.get("custom_prompt", "").strip()
     custom_section = (
-        f"\nSPECIAL INSTRUCTION FROM FRIEND:\n{custom_text}\n"
-        if custom_text
-        else ""
+        f"\nSPECIAL INSTRUCTION FROM FRIEND:\n{custom_text}\n" if custom_text else ""
     )
 
     return f"""
@@ -348,49 +348,78 @@ def get_bmo_response(user_input, session):
         mode = session.memory.get("mode", "friendly")
 
         if mode == "support":
-            messages = [
-                {"role": "system", "content": build_support_prompt(session)}
-            ]
-            # One recent exchange keeps Support Mode aware of immediate context
-            # without feeding Gemma the full conversation.
+            messages = [{"role": "system", "content": build_support_prompt(session)}]
+
+            # Only keep one recent exchange for fast Support Mode.
             messages.extend(session.history[-2:])
+
             options = {
-                "num_ctx": 2048,
-                "num_predict": 120,
+                "num_ctx": 1024,
+                "num_predict": 64,
+                "num_thread": 4,
+                "temperature": 0.3,
             }
+
+            active_model = SUPPORT_MODEL
+
         else:
-            messages = [
-                {"role": "system", "content": build_system_prompt(session)}
-            ]
+            messages = [{"role": "system", "content": build_system_prompt(session)}]
+
             messages.extend(session.history[-MAX_HISTORY_MESSAGES:])
+
             options = {
                 "num_ctx": 4096,
                 "num_predict": 256,
             }
 
+            active_model = FRIENDLY_MODEL
+
         messages.append({"role": "user", "content": user_input})
 
         log_info(
             f"[OLLAMA] Starting response for user {session.user_id} | "
-            f"Mode={mode} | Model={FRIENDLY_MODEL} | "
+            f"Mode={mode} | Model={active_model} | "
             f"Messages={len(messages)}"
         )
 
-        # Both modes intentionally use the same model so Ollama does not have
-        # to unload one model and load another when modes are switched.
+        start_time = time.perf_counter()
+
         response = ollama.chat(
-            model=FRIENDLY_MODEL,
+            model=active_model,
             messages=messages,
             options=options,
             keep_alive="30m",
         )
 
+        elapsed = time.perf_counter() - start_time
+
         content = response["message"]["content"].strip()
 
+        metrics = []
+        for label, key in (
+            ("Load", "load_duration"),
+            ("Prompt", "prompt_eval_duration"),
+            ("Generate", "eval_duration"),
+        ):
+            duration_ns = response.get(key)
+            if duration_ns is not None:
+                metrics.append(f"{label}={duration_ns / 1_000_000_000:.1f}s")
+
+        eval_count = response.get("eval_count")
+        eval_duration = response.get("eval_duration")
+        if eval_count and eval_duration:
+            tokens_per_second = eval_count / (eval_duration / 1_000_000_000)
+            metrics.append(f"Speed={tokens_per_second:.1f} tok/s")
+
+        timing_details = " | ".join(metrics)
+        if timing_details:
+            timing_details = f" | {timing_details}"
+
         log_info(
-            f"[OLLAMA] Response complete for user {session.user_id} | "
-            f"Mode={mode} | Model={FRIENDLY_MODEL}"
+            f"[OLLAMA] Response finished in {elapsed:.1f}s | "
+            f"Mode={mode} | Model={active_model}{timing_details}"
         )
+
         return content
 
     except Exception as e:
