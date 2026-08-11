@@ -23,7 +23,8 @@ CONVERSATION_DIR = "conversations"
 FRIENDLY_MODEL = os.getenv("FRIENDLY_MODEL", "gemma2:9b")
 # The smaller model is a much better fit for CPU-only, latency-sensitive replies.
 # Either model can still be changed from .env without editing this file.
-SUPPORT_MODEL = os.getenv("SUPPORT_MODEL", "llama3.2:3b")
+SUPPORT_MODEL = os.getenv("SUPPORT_MODEL", "llama3.2:1b")
+SUPPORT_KEEP_ALIVE = os.getenv("SUPPORT_KEEP_ALIVE", "2h")
 
 SILENCE_THRESHOLD = 1800
 MAX_HISTORY_MESSAGES = 40
@@ -197,6 +198,7 @@ class UserSession:
         }
     )
     history: List[dict] = field(default_factory=list)
+    support_history: List[dict] = field(default_factory=list)
     tracker: ThreadTracker = field(default_factory=ThreadTracker)
     last_bmo_comment_time: float = field(default_factory=time.time)
 
@@ -277,18 +279,10 @@ def save_conversation(user_id, history):
 def build_support_prompt(session):
     """Small, fast prompt used only in Support Mode."""
     return """
-You are BMO from Adventure Time helping Friend research, learn, compare, or troubleshoot.
-
-SUPPORT MODE RULES:
-- Always speak in third person as BMO.
-- Answer directly and concisely.
-- Prioritize useful facts over conversational filler.
-- Explain unfamiliar technical terms simply.
-- Separate known facts from guesses.
-- For troubleshooting: identify the symptom, likely causes, then the next useful test.
-- For comparisons: explain the important differences and tradeoffs.
-- Ask a follow-up question only when it is necessary to give a useful answer.
-- Stay warm and recognizable as BMO, but keep responses focused.
+You are BMO helping Friend research or troubleshoot.
+Speak in third person as BMO. Give the direct answer first, usually in one or two
+short sentences. Explain jargon simply, distinguish facts from guesses, and ask a
+question only when needed. For troubleshooting, give the next useful test.
 """
 
 
@@ -344,6 +338,28 @@ HOW BMO BEHAVES:
 """
 
 
+def preload_support_model():
+    """Load the small Support model without delaying Discord startup."""
+    try:
+        start_time = time.perf_counter()
+        ollama.generate(
+            model=SUPPORT_MODEL,
+            prompt="",
+            options={"num_ctx": 512, "num_thread": 4},
+            keep_alive=SUPPORT_KEEP_ALIVE,
+        )
+        elapsed = time.perf_counter() - start_time
+        log_info(
+            f"[OLLAMA] Support model preloaded in {elapsed:.1f}s | "
+            f"Model={SUPPORT_MODEL}"
+        )
+    except Exception as e:
+        log_error(
+            f"[OLLAMA ERROR] Could not preload Support model {SUPPORT_MODEL}",
+            e,
+        )
+
+
 def get_bmo_response(user_input, session):
     try:
         mode = session.memory.get("mode", "friendly")
@@ -351,17 +367,19 @@ def get_bmo_response(user_input, session):
         if mode == "support":
             messages = [{"role": "system", "content": build_support_prompt(session)}]
 
-            # Only keep one recent exchange for fast Support Mode.
-            messages.extend(session.history[-2:])
+            # Keep only Support Mode's most recent exchange. Friendly conversation
+            # history is intentionally excluded from this latency-sensitive path.
+            messages.extend(session.support_history[-2:])
 
             options = {
-                "num_ctx": 1024,
-                "num_predict": 64,
+                "num_ctx": 512,
+                "num_predict": 48,
                 "num_thread": 4,
                 "temperature": 0.3,
             }
 
             active_model = SUPPORT_MODEL
+            keep_alive = SUPPORT_KEEP_ALIVE
 
         else:
             messages = [{"role": "system", "content": build_system_prompt(session)}]
@@ -374,6 +392,7 @@ def get_bmo_response(user_input, session):
             }
 
             active_model = FRIENDLY_MODEL
+            keep_alive = "30m"
 
         messages.append({"role": "user", "content": user_input})
 
@@ -389,7 +408,7 @@ def get_bmo_response(user_input, session):
             model=active_model,
             messages=messages,
             options=options,
-            keep_alive="30m",
+            keep_alive=keep_alive,
         )
 
         elapsed = time.perf_counter() - start_time
@@ -397,17 +416,25 @@ def get_bmo_response(user_input, session):
         content = response["message"]["content"].strip()
 
         metrics = []
-        for label, key in (
-            ("Load", "load_duration"),
-            ("Prompt", "prompt_eval_duration"),
-            ("Generate", "eval_duration"),
-        ):
-            duration_ns = response.get(key)
-            if duration_ns is not None:
-                metrics.append(f"{label}={duration_ns / 1_000_000_000:.1f}s")
+        load_duration = response.get("load_duration")
+        if load_duration is not None:
+            metrics.append(f"Load={load_duration / 1_000_000_000:.1f}s")
+
+        prompt_duration = response.get("prompt_eval_duration")
+        prompt_count = response.get("prompt_eval_count")
+        if prompt_duration is not None:
+            prompt_tokens = f"/{prompt_count} tok" if prompt_count is not None else ""
+            metrics.append(
+                f"Prompt={prompt_duration / 1_000_000_000:.1f}s{prompt_tokens}"
+            )
 
         eval_count = response.get("eval_count")
         eval_duration = response.get("eval_duration")
+        if eval_duration is not None:
+            generated_tokens = f"/{eval_count} tok" if eval_count is not None else ""
+            metrics.append(
+                f"Generate={eval_duration / 1_000_000_000:.1f}s{generated_tokens}"
+            )
         if eval_count and eval_duration:
             tokens_per_second = eval_count / (eval_duration / 1_000_000_000)
             metrics.append(f"Speed={tokens_per_second:.1f} tok/s")
@@ -566,6 +593,7 @@ def process_discord_message(discord_msg, discord_bot):
 
     if mode_command == "support mode":
         session.memory["mode"] = "support"
+        session.support_history.clear()
         persist_session(session)
         discord_bot.send_message(user_id, "Support mode activated.")
         return
@@ -580,6 +608,16 @@ def process_discord_message(discord_msg, discord_bot):
         ]
     )
     session.history = session.history[-MAX_HISTORY_MESSAGES:]
+
+    if session.memory.get("mode", "friendly") == "support":
+        session.support_history.extend(
+            [
+                {"role": "user", "content": content},
+                {"role": "assistant", "content": bmo_response},
+            ]
+        )
+        session.support_history = session.support_history[-2:]
+
     session.last_bmo_comment_time = time.time()
 
     persist_session(session)
@@ -630,6 +668,12 @@ def main():
         bmo_brain=generate_bmo_comment,
         discord_queue=discord_queue,
     )
+
+    threading.Thread(
+        target=preload_support_model,
+        name="BMO-Support-Preload",
+        daemon=True,
+    ).start()
 
     user_queues = {}
     for raw_user_id in user_ids:
