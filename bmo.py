@@ -3,6 +3,7 @@ import logging
 import os
 import queue
 import sys
+import threading
 import time
 import traceback
 from dataclasses import dataclass, field
@@ -539,6 +540,76 @@ FACTS:
         persist_session(session)
 
 
+def process_discord_message(discord_msg, discord_bot):
+    """Process one message while preserving order within a user's queue."""
+    source = discord_msg.get("source")
+    user_id = int(discord_msg["user_id"])
+    content = discord_msg.get("content", "").strip()
+    session = get_session(user_id)
+
+    if source == "prompt_update":
+        session.memory["custom_prompt"] = content
+        persist_session(session)
+        log_info(f"[PROMPT UPDATE] Saved for user {user_id}")
+        return
+
+    if source != "discord" or not content:
+        return
+
+    mode_command = content.lower().strip()
+
+    if mode_command == "friendly mode":
+        session.memory["mode"] = "friendly"
+        persist_session(session)
+        discord_bot.send_message(user_id, "Friendly mode activated.")
+        return
+
+    if mode_command == "support mode":
+        session.memory["mode"] = "support"
+        persist_session(session)
+        discord_bot.send_message(user_id, "Support mode activated.")
+        return
+
+    bmo_response = get_bmo_response(content, session)
+    session.tracker.update(content, bmo_response)
+
+    session.history.extend(
+        [
+            {"role": "user", "content": content},
+            {"role": "assistant", "content": bmo_response},
+        ]
+    )
+    session.history = session.history[-MAX_HISTORY_MESSAGES:]
+    session.last_bmo_comment_time = time.time()
+
+    persist_session(session)
+    log_info(f"[BMO OUT] User {user_id}: {bmo_response}")
+    discord_bot.send_message(user_id, bmo_response)
+
+    # Update summarized memory every 10 messages.
+    if (
+        session.memory.get("mode", "friendly") == "friendly"
+        and len(session.history) % 10 == 0
+    ):
+        update_long_term_memory(session)
+
+
+def user_message_worker(user_id, user_queue, discord_bot):
+    """Give each user an independent, ordered message-processing lane."""
+    log_info(f"[USER WORKER] Started for {user_id}")
+
+    while True:
+        discord_msg = user_queue.get()
+        try:
+            if discord_msg is None:
+                return
+            process_discord_message(discord_msg, discord_bot)
+        except Exception as e:
+            log_error(f"[USER WORKER ERROR] User {user_id}", e)
+        finally:
+            user_queue.task_done()
+
+
 def main():
     token = os.getenv("DISCORD_TOKEN", "").strip()
     raw_ids = os.getenv("DISCORD_USER_ID", "")
@@ -559,8 +630,20 @@ def main():
         bmo_brain=generate_bmo_comment,
         discord_queue=discord_queue,
     )
-    discord_bot.run_in_thread()
 
+    user_queues = {}
+    for raw_user_id in user_ids:
+        user_id = int(raw_user_id)
+        user_queue = queue.Queue()
+        user_queues[user_id] = user_queue
+        threading.Thread(
+            target=user_message_worker,
+            args=(user_id, user_queue, discord_bot),
+            name=f"BMO-User-{user_id}",
+            daemon=True,
+        ).start()
+
+    discord_bot.run_in_thread()
     log_info("BMO is loaded")
 
     try:
@@ -570,62 +653,31 @@ def main():
             except queue.Empty:
                 continue
 
-            source = discord_msg.get("source")
-            user_id = discord_msg.get("user_id")
-            content = discord_msg.get("content", "").strip()
-
-            if user_id is None:
+            raw_user_id = discord_msg.get("user_id")
+            if raw_user_id is None:
                 log_error("[QUEUE ERROR] Message has no user_id")
                 continue
 
-            session = get_session(user_id)
-
-            if source == "prompt_update":
-                session.memory["custom_prompt"] = content
-                persist_session(session)
-                log_info(f"[PROMPT UPDATE] Saved for user {user_id}")
+            try:
+                user_id = int(raw_user_id)
+            except (TypeError, ValueError):
+                log_error(f"[QUEUE ERROR] Invalid user_id: {raw_user_id!r}")
                 continue
 
-            if source != "discord" or not content:
-                continue
-            mode_command = content.lower().strip()
-
-            if mode_command == "friendly mode":
-                session.memory["mode"] = "friendly"
-                persist_session(session)
-                discord_bot.send_message(user_id, "Friendly mode activated.")
+            user_queue = user_queues.get(user_id)
+            if user_queue is None:
+                log_error(f"[QUEUE ERROR] No worker for user {user_id}")
                 continue
 
-            if mode_command == "support mode":
-                session.memory["mode"] = "support"
-                persist_session(session)
-                discord_bot.send_message(user_id, "Support mode activated.")
-                continue
-
-            bmo_response = get_bmo_response(content, session)
-            session.tracker.update(content, bmo_response)
-
-            session.history.extend(
-                [
-                    {"role": "user", "content": content},
-                    {"role": "assistant", "content": bmo_response},
-                ]
+            user_queue.put(discord_msg)
+            log_info(
+                f"[DISPATCH] Message sent to worker {user_id} | "
+                f"Pending for user: {user_queue.qsize()}"
             )
-            session.history = session.history[-MAX_HISTORY_MESSAGES:]
-            session.last_bmo_comment_time = time.time()
-
-            persist_session(session)
-            log_info(f"[BMO OUT] User {user_id}: {bmo_response}")
-            discord_bot.send_message(user_id, bmo_response)
-
-            # Update summarized memory every 10 messages.
-            if (
-                session.memory.get("mode", "friendly") == "friendly"
-                and len(session.history) % 10 == 0
-            ):
-                update_long_term_memory(session)
 
     except KeyboardInterrupt:
+        for user_queue in user_queues.values():
+            user_queue.put(None)
         log_info("[SHUTDOWN] Saving user sessions")
         for session in sessions.values():
             persist_session(session)
