@@ -23,7 +23,7 @@ CONVERSATION_DIR = "conversations"
 FRIENDLY_MODEL = os.getenv("FRIENDLY_MODEL", "gemma2:9b")
 # The smaller model is a much better fit for CPU-only, latency-sensitive replies.
 # Either model can still be changed from .env without editing this file.
-SUPPORT_MODEL = os.getenv("SUPPORT_MODEL", "llama3.2:1b")
+SUPPORT_MODEL = os.getenv("SUPPORT_MODEL", "qwen2.5:1.5b")
 SUPPORT_KEEP_ALIVE = os.getenv("SUPPORT_KEEP_ALIVE", "2h")
 
 SILENCE_THRESHOLD = 1800
@@ -279,10 +279,11 @@ def save_conversation(user_id, history):
 def build_support_prompt(session):
     """Small, fast prompt used only in Support Mode."""
     return """
-You are BMO helping Friend research or troubleshoot.
-Speak in third person as BMO. Give the direct answer first, usually in one or two
-short sentences. Explain jargon simply, distinguish facts from guesses, and ask a
-question only when needed. For troubleshooting, give the next useful test.
+You are BMO from Adventure Time helping Friend research and troubleshoot.
+Always refer to yourself as BMO, never as I or me. Give concise, factual, complete
+answers. Use the recent conversation to understand follow-ups. If Friend is
+confused, directly clarify the previous answer and correct any mistake. Do not add
+speaker labels, repeat yourself, or ask an unnecessary question.
 """
 
 
@@ -345,7 +346,7 @@ def preload_support_model():
         ollama.generate(
             model=SUPPORT_MODEL,
             prompt="",
-            options={"num_ctx": 512, "num_thread": 4},
+            options={"num_ctx": 768, "num_thread": 4},
             keep_alive=SUPPORT_KEEP_ALIVE,
         )
         elapsed = time.perf_counter() - start_time
@@ -367,15 +368,16 @@ def get_bmo_response(user_input, session):
         if mode == "support":
             messages = [{"role": "system", "content": build_support_prompt(session)}]
 
-            # Keep only Support Mode's most recent exchange. Friendly conversation
-            # history is intentionally excluded from this latency-sensitive path.
-            messages.extend(session.support_history[-2:])
+            # Keep three Support exchanges for coherent follow-ups. Friendly
+            # history remains excluded from this latency-sensitive path.
+            messages.extend(session.support_history[-6:])
 
             options = {
-                "num_ctx": 512,
-                "num_predict": 48,
+                "num_ctx": 768,
+                "num_predict": 40,
                 "num_thread": 4,
-                "temperature": 0.3,
+                "temperature": 0.2,
+                "stop": ["\n\n"],
             }
 
             active_model = SUPPORT_MODEL
@@ -414,6 +416,11 @@ def get_bmo_response(user_input, session):
         elapsed = time.perf_counter() - start_time
 
         content = response["message"]["content"].strip()
+        if mode == "support":
+            for label in ("bmo:", "bmo says:"):
+                if content.lower().startswith(label):
+                    content = content[len(label) :].lstrip()
+                    break
 
         metrics = []
         load_duration = response.get("load_duration")
@@ -616,7 +623,7 @@ def process_discord_message(discord_msg, discord_bot):
                 {"role": "assistant", "content": bmo_response},
             ]
         )
-        session.support_history = session.support_history[-2:]
+        session.support_history = session.support_history[-6:]
 
     session.last_bmo_comment_time = time.time()
 
